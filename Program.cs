@@ -1,6 +1,8 @@
 using ScannerService.Application.Interfaces;
 using ScannerService.Infrastructure.Kafka;
 using ScannerService.Infrastructure.Semgrep;
+using ScannerService.Infrastructure.Http;
+using ScannerService.Infrastructure.Trivy;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,8 +19,19 @@ builder.Services.AddHttpClient<ISemgrepClient, SemgrepClient>(client =>
     client.Timeout = TimeSpan.FromMinutes(10);
 });
 
-// Infrastructure services
-builder.Services.AddSingleton<KafkaScanResultProducer>();
+
+builder.Services.AddHttpClient<ITrivyClient, TrivyClient>(client =>
+{
+    client.BaseAddress = new Uri("http://localhost:5279");
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
+
+
+builder.Services.AddHttpClient<IScanResultSender, ScanResultSender>(client =>
+{
+    client.BaseAddress = new Uri("http://localhost:5245");
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
 
 builder.Services.AddSingleton<KafkaScanProgressProducer>();
 

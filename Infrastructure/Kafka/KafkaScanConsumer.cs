@@ -1,3 +1,4 @@
+
 using System.Text.Json;
 using Confluent.Kafka;
 using Microsoft.Extensions.Configuration;
@@ -12,20 +13,23 @@ public class KafkaScanConsumer : BackgroundService
 {
     private readonly IConfiguration _configuration;
     private readonly ISemgrepClient _semgrepClient;
-    private readonly KafkaScanResultProducer _resultProducer;
+    private readonly ITrivyClient _trivyClient;
+    private readonly IScanResultSender _scanResultSender;
     private readonly KafkaScanProgressProducer _progressProducer;
     private readonly ILogger<KafkaScanConsumer> _logger;
 
     public KafkaScanConsumer(
         IConfiguration configuration,
         ISemgrepClient semgrepClient,
-        KafkaScanResultProducer resultProducer,
+        ITrivyClient trivyClient,
+        IScanResultSender scanResultSender,
         KafkaScanProgressProducer progressProducer,
         ILogger<KafkaScanConsumer> logger)
     {
         _configuration = configuration;
         _semgrepClient = semgrepClient;
-        _resultProducer = resultProducer;
+        _trivyClient = trivyClient;
+        _scanResultSender = scanResultSender;
         _progressProducer = progressProducer;
         _logger = logger;
     }
@@ -72,11 +76,8 @@ public class KafkaScanConsumer : BackgroundService
                     var result =
                         consumer.Consume(stoppingToken);
 
-                    if (string.IsNullOrWhiteSpace(
-                            result.Message.Value))
-                    {
+                    if (string.IsNullOrWhiteSpace(result.Message.Value))
                         continue;
-                    }
 
                     var scanRequest =
                         JsonSerializer.Deserialize<ScanRequest>(
@@ -86,96 +87,127 @@ public class KafkaScanConsumer : BackgroundService
                     {
                         _logger.LogWarning(
                             "Kafka message could not be deserialized.");
-
                         continue;
                     }
 
-                    _logger.LogInformation(
-                        "Scan request received. AssetId: {AssetId}, ScanRunId: {ScanRunId}",
-                        scanRequest.AssetId,
-                        scanRequest.ScanRunId);
+                    var scanner = scanRequest.Scanner.Trim();
 
-                    // 1. Scan başladı
+                    _logger.LogInformation(
+                        "Scan request received. AssetId: {AssetId}, ScanRunId: {ScanRunId}, Scanner: {Scanner}",
+                        scanRequest.AssetId,
+                        scanRequest.ScanRunId,
+                        scanner);
+
                     await _progressProducer.SendProgressAsync(
                         new ScanProgress
                         {
                             AssetId = scanRequest.AssetId,
                             ScanRunId = scanRequest.ScanRunId,
                             Status = "Started",
-                            Message = "Scan started.",
+                            Message = $"{scanner} scan started.",
                             Timestamp = DateTime.UtcNow
                         });
 
-                    _logger.LogInformation(
-                        "Scan progress sent: Scan started. AssetId: {AssetId}, ScanRunId: {ScanRunId}",
-                        scanRequest.AssetId,
-                        scanRequest.ScanRunId);
-
-                    // 2. Semgrep taraması başlıyor
                     await _progressProducer.SendProgressAsync(
                         new ScanProgress
                         {
                             AssetId = scanRequest.AssetId,
                             ScanRunId = scanRequest.ScanRunId,
                             Status = "Scanning",
-                            Message = "Semgrep scan started.",
+                            Message = $"{scanner} scan is running.",
                             Timestamp = DateTime.UtcNow
                         });
 
+                    ScanResult scanResult;
+
+                    try
+                    {
+                        if (scanner.Equals(
+                                "Semgrep",
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            scanResult = await _semgrepClient.ScanAsync(
+                                scanRequest,
+                                stoppingToken);
+                        }
+                        else if (scanner.Equals(
+                                     "Trivy",
+                                     StringComparison.OrdinalIgnoreCase))
+                        {
+                            scanResult = await _trivyClient.ScanAsync(
+                                scanRequest,
+                                stoppingToken);
+                        }
+                        else
+                        {
+                            scanResult = new ScanResult
+                            {
+                                AssetId = scanRequest.AssetId,
+                                ScanRunId = scanRequest.ScanRunId,
+                                Scanner = scanner,
+                                Source = scanRequest.Source,
+                                Success = false,
+                                Error = $"Desteklenmeyen tarayıcı: {scanner}"
+                            };
+                        }
+                    }
+                    catch (OperationCanceledException)
+                        when (stoppingToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(
+                            ex,
+                            "{Scanner} servisine bağlanırken hata oluştu. AssetId: {AssetId}, ScanRunId: {ScanRunId}",
+                            scanner,
+                            scanRequest.AssetId,
+                            scanRequest.ScanRunId);
+
+                        scanResult = new ScanResult
+                        {
+                            AssetId = scanRequest.AssetId,
+                            ScanRunId = scanRequest.ScanRunId,
+                            Scanner = scanner,
+                            Source = scanRequest.Source,
+                            Success = false,
+                            Error = $"{scanner} servisine ulaşılamadı: {ex.Message}"
+                        };
+                    }
+
+                    await _scanResultSender.SendAsync(
+    scanResult,
+    stoppingToken);
+
                     _logger.LogInformation(
-                        "Scan progress sent: Semgrep scan started. AssetId: {AssetId}, ScanRunId: {ScanRunId}",
-                        scanRequest.AssetId,
-                        scanRequest.ScanRunId);
+                        "Scan result sent to UserManagement. AssetId: {AssetId}, ScanRunId: {ScanRunId}, Scanner: {Scanner}, Success: {Success}",
+                        scanResult.AssetId,
+                        scanResult.ScanRunId,
+                        scanResult.Scanner,
+                        scanResult.Success);
 
-                    // 3. Semgrep taramasını çalıştır
-                    var scanResult =
-                        await _semgrepClient.ScanAsync(
-                            scanRequest,
-                            stoppingToken);
-
-                    // 4. Semgrep tamamlandı
                     await _progressProducer.SendProgressAsync(
                         new ScanProgress
                         {
                             AssetId = scanRequest.AssetId,
                             ScanRunId = scanRequest.ScanRunId,
-                            Status = "Completed",
-                            Message =
-                                $"Semgrep scan completed. {scanResult.Findings.Count} finding(s) found.",
+                            Status = scanResult.Success ? "Completed" : "Failed",
+                            Message = scanResult.Success
+                                ? $"{scanner} scan completed. {scanResult.Findings.Count} finding(s) found."
+                                : $"{scanner} scan failed: {scanResult.Error}",
                             Timestamp = DateTime.UtcNow
                         });
 
-                    _logger.LogInformation(
-                        "Scan progress sent: Semgrep scan completed. AssetId: {AssetId}, ScanRunId: {ScanRunId}, Findings: {FindingsCount}",
-                        scanRequest.AssetId,
-                        scanRequest.ScanRunId,
-                        scanResult.Findings.Count);
-
-                    // 5. Scan sonucunu UserManagement'e gönder
-                    await _resultProducer
-                        .SendScanResultAsync(scanResult);
-
-                    _logger.LogInformation(
-                        "Scan result sent to Kafka. AssetId: {AssetId}, ScanRunId: {ScanRunId}, Success: {Success}",
-                        scanResult.AssetId,
-                        scanResult.ScanRunId,
-                        scanResult.Success);
-
-                    // 6. Scan tamamlandı
                     await _progressProducer.SendProgressAsync(
                         new ScanProgress
                         {
                             AssetId = scanRequest.AssetId,
                             ScanRunId = scanRequest.ScanRunId,
                             Status = "Finished",
-                            Message = "Scan completed.",
+                            Message = $"{scanner} scan finished.",
                             Timestamp = DateTime.UtcNow
                         });
-
-                    _logger.LogInformation(
-                        "Scan progress sent: Scan completed. AssetId: {AssetId}, ScanRunId: {ScanRunId}",
-                        scanRequest.AssetId,
-                        scanRequest.ScanRunId);
                 }
                 catch (ConsumeException ex)
                 {

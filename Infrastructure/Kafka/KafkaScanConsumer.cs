@@ -14,6 +14,8 @@ public class KafkaScanConsumer : BackgroundService
     private readonly IConfiguration _configuration;
     private readonly ISemgrepClient _semgrepClient;
     private readonly ITrivyClient _trivyClient;
+    private readonly IGitleaksClient _gitleaksClient;
+    private readonly ISonarQubeClient _sonarQubeClient;
     private readonly IScanResultSender _scanResultSender;
     private readonly KafkaScanProgressProducer _progressProducer;
     private readonly ILogger<KafkaScanConsumer> _logger;
@@ -22,6 +24,8 @@ public class KafkaScanConsumer : BackgroundService
         IConfiguration configuration,
         ISemgrepClient semgrepClient,
         ITrivyClient trivyClient,
+        IGitleaksClient gitleaksClient,
+        ISonarQubeClient sonarQubeClient,
         IScanResultSender scanResultSender,
         KafkaScanProgressProducer progressProducer,
         ILogger<KafkaScanConsumer> logger)
@@ -29,6 +33,8 @@ public class KafkaScanConsumer : BackgroundService
         _configuration = configuration;
         _semgrepClient = semgrepClient;
         _trivyClient = trivyClient;
+        _gitleaksClient = gitleaksClient;
+        _sonarQubeClient = sonarQubeClient;
         _scanResultSender = scanResultSender;
         _progressProducer = progressProducer;
         _logger = logger;
@@ -138,6 +144,22 @@ public class KafkaScanConsumer : BackgroundService
                                 scanRequest,
                                 stoppingToken);
                         }
+                        else if (scanner.Equals(
+                                     "Gitleaks",
+                                     StringComparison.OrdinalIgnoreCase))
+                        {
+                            scanResult = await _gitleaksClient.ScanAsync(
+                                scanRequest,
+                                stoppingToken);
+                        }
+                        else if (scanner.Equals(
+                                     "SonarQube",
+                                     StringComparison.OrdinalIgnoreCase))
+                        {
+                            scanResult = await _sonarQubeClient.ScanAsync(
+                                scanRequest,
+                                stoppingToken);
+                        }
                         else
                         {
                             scanResult = new ScanResult
@@ -147,7 +169,7 @@ public class KafkaScanConsumer : BackgroundService
                                 Scanner = scanner,
                                 Source = scanRequest.Source,
                                 Success = false,
-                                Error = $"Desteklenmeyen tarayıcı: {scanner}"
+                                Error = $"Unsupported scanner: {scanner}"
                             };
                         }
                     }
@@ -160,7 +182,7 @@ public class KafkaScanConsumer : BackgroundService
                     {
                         _logger.LogError(
                             ex,
-                            "{Scanner} servisine bağlanırken hata oluştu. AssetId: {AssetId}, ScanRunId: {ScanRunId}",
+                            "An error occurred while connecting to the {Scanner} service. AssetId: {AssetId}, ScanRunId: {ScanRunId}",
                             scanner,
                             scanRequest.AssetId,
                             scanRequest.ScanRunId);
@@ -172,13 +194,13 @@ public class KafkaScanConsumer : BackgroundService
                             Scanner = scanner,
                             Source = scanRequest.Source,
                             Success = false,
-                            Error = $"{scanner} servisine ulaşılamadı: {ex.Message}"
+                            Error = $"Could not reach the {scanner} service: {ex.Message}"
                         };
                     }
 
                     await _scanResultSender.SendAsync(
-    scanResult,
-    stoppingToken);
+                        scanResult,
+                        stoppingToken);
 
                     _logger.LogInformation(
                         "Scan result sent to UserManagement. AssetId: {AssetId}, ScanRunId: {ScanRunId}, Scanner: {Scanner}, Success: {Success}",

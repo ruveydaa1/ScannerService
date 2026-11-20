@@ -33,7 +33,7 @@ public class SemgrepClient : ISemgrepClient
                 Success = false,
                 Scanner = "Semgrep",
                 Source = request.Source,
-                Error = "SemgrepService API key yapılandırılmamış."
+                Error = "SemgrepService API key is not configured."
             };
         }
 
@@ -59,7 +59,7 @@ public class SemgrepClient : ISemgrepClient
                 Scanner = "Semgrep",
                 Source = request.Source,
                 Error =
-                    $"SemgrepService hata döndürdü. HTTP Status: {(int)response.StatusCode}"
+                    $"SemgrepService returned an error. HTTP Status: {(int)response.StatusCode}"
             };
         }
 
@@ -77,7 +77,7 @@ public class SemgrepClient : ISemgrepClient
                 Scanner = "Semgrep",
                 Source = request.Source,
                 Error =
-                    "SemgrepService boş veya geçersiz sonuç döndürdü."
+                    "SemgrepService returned an empty or invalid result."
             };
         }
 

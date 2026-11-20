@@ -37,7 +37,7 @@ public class TrivyClient : ITrivyClient
                 Success = false,
                 Scanner = "Trivy",
                 Source = request.Source,
-                Error = "TrivyService API key yapılandırılmamış."
+                Error = "TrivyService API key is not configured."
             };
         }
 
@@ -63,7 +63,7 @@ public class TrivyClient : ITrivyClient
                 Scanner = "Trivy",
                 Source = request.Source,
                 Error =
-                    $"TrivyService hata döndürdü. HTTP Status: {(int)response.StatusCode}"
+                    $"TrivyService returned an error. HTTP Status: {(int)response.StatusCode}"
             };
         }
 
@@ -81,7 +81,7 @@ public class TrivyClient : ITrivyClient
                 Scanner = "Trivy",
                 Source = request.Source,
                 Error =
-                    "TrivyService boş veya geçersiz sonuç döndürdü."
+                    "TrivyService returned an empty or invalid result."
             };
         }
 
